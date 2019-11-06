@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+	   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	   xmlns:jdbc="http://www.springframework.org/schema/jdbc"
+	   xsi:schemaLocation="        http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd        http://camel.apache.org/schema/spring       http://camel.apache.org/schema/spring/camel-spring.xsd">
+	<bean id="xmlJsonDataFormat" class="org.apache.camel.dataformat.xmljson.XmlJsonDataFormat">
+		<property name="encoding" value="UTF-8"/>
+		<property name="elementName" value="${xml.elementName}"/>
+		<property name="removeNamespacePrefixes" value="true"/>
+		<property name="forceTopLevelObject" value="true"/>
+		<property name="trimSpaces" value="true"/>
+		<property name="skipNamespaces" value="true"/>
+	</bean>
+	<bean id="camelComponentsDataSource" class="com.alibaba.druid.pool.DruidDataSource" init-method="init" destroy-method="close">
+		<property name="url" value="${jdbc.url}"/>
+		<property name="username" value="${jdbc.username}"/>
+		<property name="password" value="${jdbc.password}"/>
+		<property name="filters" value="stat"/>
+		<property name="maxActive" value="20"/>
+		<property name="initialSize" value="1"/>
+		<property name="maxWait" value="600"/>
+		<property name="minIdle" value="1"/>
+		<property name="timeBetweenEvictionRunsMillis" value="3000"/>
+		<property name="testWhileIdle" value="true"/>
+		<property name="testOnBorrow" value="false"/>
+		<property name="testOnReturn" value="false"/>
+		<property name="maxPoolPreparedStatementPerConnectionSize" value="20"/>
+	</bean>
+	<!-- configure the Camel SQL component to use the JDBC data source -->
+	<bean id="sql" class="org.apache.camel.component.sql.SqlComponent">
+		<property name="dataSource" ref="camelComponentsDataSource"/>
+	</bean>
+	<camelContext id="camel"
+				  xmlns="http://camel.apache.org/schema/spring">
+		<propertyPlaceholder id="properties" location="classpath:application.properties,classpath:config/bootstrap.properties,classpath:componetConfig.properties" cache="false"/>
+		<dataFormats>
+			<json id="jack" library="Jackson" />
+		</dataFormats>
+		<rest apiDocs="true" consumes="application/json"
+			  id="rest-315aadb3-0f6c-4696-964a-f8ba9dc3f8b5" path="/service"
+			  produces="application/json">
+			<post apiDocs="true"
+				  id="post-ead9902d-365a-493b-9870-cfb058490142" consumes="application/json,application/xml"
+				  produces="application/json,application/xml" uri="/db">
+				<param name="body" type="body" dataType="json"/>
+				<param name="token" type="header" dataType="String" required="false"/>
+				<responseMessage message="request SuccessFully!" code="200" responseModel="com.pactera.excep_json.JsonResult"/>
+				<responseMessage message="Request Page not found!" code="404" responseModel="com.pactera.excep_json.JsonResult"/>
+				<responseMessage message="this interface discover error!" code="500" responseModel="com.pactera.excep_json.JsonResult"/>
+				<to uri="direct:inbox" />
+			</post>
+		</rest>
+		<route id="_injectroute" streamCache="true">
+			<from id="_fromIR1" uri="direct:inbox" />
+			<!-- response data result class[ xml to json] -->
+			<process ref="camelRequestProccess"/>
+			<onException>
+				<exception>java.lang.Exception</exception>
+				<redeliveryPolicy maximumRedeliveries="2" />
+				<handled>
+					<constant>true</constant>
+				</handled>
+				<process ref="globalExceptionProccess"/>
+				<to id="_toerror" uri="seda:error" pattern="InOnly"/>
+			</onException>
+			<!-- token check!-->
+			<log message=">>in.header.tokenStatus: ${in.header.tokenStatus}"/>
+			<choice>
+				<when>
+					<simple>${in.header.tokenStatus} == 0 </simple>
+					<to uri="{{service.app.sql}}"/>
+					<process ref="camelResponseProccess"/>
+					<!--<choice>
+						<when>
+							<simple>${in.header.accept} == 'application/xml'</simple>
+							<to uri="direct:unMarshalEmployeejson2xml"/>
+						</when>
+					</choice>-->
+					<!--<to uri="direct:audit"/>-->
+					<to id="_to1" uri="seda:loginfo?synchronous=true"  pattern="InOnly"/>
+				</when>
+				<otherwise>
+					<!--<log message="simon&#45;&#45;a-sdfjalsdfjlaskdjflaksdjfl"/>-->
+					<to uri="bean:tokenValidProcess?method=process"/>
+					<to id="_toerror" uri="seda:error" pattern="InOnly"/>
+				</otherwise>
+			</choice>
+			<!-- so jms  Exception that not send Message to MQ(because MQ has Exception!!!)-->
+			<onException>
+				<exception>javax.jms.JMSException</exception>
+				<redeliveryPolicy maximumRedeliveries="2" />
+				<handled>
+					<constant>true</constant>
+				</handled>
+				<process ref="globalExceptionProccess"/>
+			</onException>
+			<onException>
+				<exception>java.lang.Exception</exception>
+				<redeliveryPolicy maximumRedeliveries="2" />
+				<handled>
+					<constant>true</constant>
+				</handled>
+				<process ref="globalExceptionProccess"/>
+				<to id="_toerror" uri="seda:error" pattern="InOnly"/>
+			</onException>
+			<log id="route-log" message=">>> Message:  ${body}" />
+		</route>
+		<!--Return data format convert Route-->
+		<route id="_auditroute" streamCache="true">
+			<from id="_fromauditUR" uri="direct:audit"/>
+			<to id="_to4" uri="bean:com.pactera.proccess.MyDataformat?method=process" />
+			<log id="_logex" message=">> Auditting : ${body}" />
+		</route>
+		<!--log data convert Route-->
+		<route id="_logDataFormatRoute" streamCache="true">
+			<from id="_fromLogDataFormatUR" uri="direct:logDataFormat" />
+			<to id="_to5"  uri="bean:logDataformat?method=process" />
+		</route>
+		<!--send log Info message to MQ Queue Route-->
+		<route id="_logroute" streamCache="true">
+			<from id="_fromIR1" uri="seda:loginfo?synchronous=true" />
+			<!--so send message need to String Type that to direct:audit data type convert!-->
+			<to uri="direct:logDataFormat"/>
+			<convertBodyTo type="String"/>
+			<to id="_tologq" uri="amqp:queue:amqp:queue:q.hzinte.logq?asyncConsumer=true"  pattern="InOnly" />
+			<onException>
+				<exception>java.lang.Exception</exception>
+				<redeliveryPolicy maximumRedeliveries="2" />
+				<handled>
+					<constant>true</constant>
+				</handled>
+				<process ref="globalExceptionProccess"/>
+				<setExchangePattern id="_setExchangePattern1"
+									pattern="InOnly" />
+			</onException>
+		</route>
+		<!--send log Error message to MQ Queue Route-->
+		<route id="_errorroute" streamCache="true">
+			<from id="_fromIR1" uri="seda:error?synchronous=true" />
+			<setExchangePattern id="_setExchangePattern1"
+								pattern="InOnly" />
+			<!--so send message need to String Type that to direct:audit data type convert!-->
+			<to uri="direct:logDataFormat"/>
+			<convertBodyTo type="String"/>
+			<to id="_toerrorq" uri="amqp:queue:q.hzinte.errorq" pattern="InOnly" />
+			<onException>
+				<exception>java.lang.Exception</exception>
+				<redeliveryPolicy maximumRedeliveries="2" />
+				<handled>
+					<constant>true</constant>
+				</handled>
+				<process ref="globalExceptionProccess"/>
+				<setExchangePattern id="_setExchangePattern1"
+									pattern="InOnly" />
+			</onException>
+		</route>
+	</camelContext>
+</beans>
