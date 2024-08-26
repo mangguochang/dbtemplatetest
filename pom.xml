@@ -18,7 +18,7 @@
         <camel.version>2.24.0</camel.version>
         <swagger.version>1.5.23</swagger.version>
         <version.fuse.plugin>2.23.2.fuse-740011-redhat-00001</version.fuse.plugin>
-        <version.swagger-ui>3.13.0</version.swagger-ui>
+        <version.swagger-ui>3.23.11</version.swagger-ui>
         <version.webjars.locator>0.33</version.webjars.locator>
     </properties>
     <dependencyManagement>
